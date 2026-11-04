@@ -58,8 +58,9 @@ export const ArtisanStudio: React.FC<ArtisanStudioProps> = ({
   onFillSampleAnswers,
 }) => {
   const [activeQuestionIndex, setActiveQuestionIndex] = useState<number | null>(0);
-  const [isRecordingMock, setIsRecordingMock] = useState(false);
   const [artisanApproved, setArtisanApproved] = useState(true);
+  const [transcribeLoading, setTranscribeLoading] = useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   // Sensory gauges
   const [waterTemp, setWaterTemp] = useState(82);
@@ -98,16 +99,40 @@ export const ArtisanStudio: React.FC<ArtisanStudioProps> = ({
           </div>
 
           <div className="flex items-center gap-2.5 shrink-0">
+            {/* Amazon Transcribe — real audio upload */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="audio/*,.mp3,.wav,.m4a,.ogg,.webm"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                setTranscribeLoading(true);
+                try {
+                  const { transcribeAudio } = await import('../api');
+                  const result = await transcribeAudio(file, 'en-IN', artisanName || 'artisan');
+                  if (result.transcript) {
+                    const current = craftDescription || '';
+                    setCraftDescription(current ? `${current}\n\n${result.transcript}` : result.transcript ?? '');
+                  }
+                } catch (err) {
+                  console.error('Transcription failed', err);
+                } finally {
+                  setTranscribeLoading(false);
+                  if (fileInputRef.current) fileInputRef.current.value = '';
+                }
+              }}
+            />
             <button
-              onClick={() => setIsRecordingMock(!isRecordingMock)}
-              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                isRecordingMock
-                  ? 'bg-rose-600 text-white border-rose-500 animate-pulse'
-                  : 'bg-white/10 hover:bg-white/15 text-stone-200 border-white/15'
-              }`}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={transcribeLoading}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold border border-white/15 bg-white/10 hover:bg-white/15 text-stone-200 transition-all cursor-pointer disabled:opacity-50"
             >
-              <Mic className="w-4 h-4 text-craft-amber-400" />
-              <span>{isRecordingMock ? 'Recording Dialect...' : 'Record Artisan Voice'}</span>
+              {transcribeLoading
+                ? <><span className="animate-spin">⏳</span><span>Transcribing...</span></>
+                : <><Mic className="w-4 h-4 text-craft-amber-400" /><span>Upload Audio (Transcribe)</span></>
+              }
             </button>
             <button
               onClick={onLoadSampleNotes}

@@ -14,10 +14,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 load_dotenv()
@@ -438,7 +438,11 @@ class RunAllRequest(BaseModel):
 
 class LearnerSessionRequest(BaseModel):
     learner_id: str
-    message: str  # e.g. "I just scored 4/5 on the Sungudi quiz"
+    message:    str
+    craft_name: str = "Traditional Craft"
+    quiz_score: Optional[int] = None
+    total_questions: Optional[int] = None
+    completed_steps: Optional[List[int]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -447,11 +451,45 @@ class LearnerSessionRequest(BaseModel):
 
 @app.get("/health")
 def health_check():
+    """Health check — reports all integrated AWS services."""
+    services = {
+        "bedrock":    "configured",
+        "s3":         "unknown",
+        "dynamodb":   "unknown",
+        "transcribe": "unknown",
+        "polly":      "unknown",
+    }
+    try:
+        import boto3
+        boto3.client("s3", region_name=os.environ.get("AWS_DEFAULT_REGION","us-east-1")).list_buckets()
+        services["s3"] = "ok"
+    except Exception:
+        services["s3"] = "error"
+    try:
+        import boto3
+        boto3.client("dynamodb", region_name=os.environ.get("AWS_DEFAULT_REGION","us-east-1")).list_tables(Limit=1)
+        services["dynamodb"] = "ok"
+    except Exception:
+        services["dynamodb"] = "error"
+    try:
+        import boto3
+        boto3.client("transcribe", region_name=os.environ.get("AWS_DEFAULT_REGION","us-east-1")).list_transcription_jobs(MaxResults=1)
+        services["transcribe"] = "ok"
+    except Exception:
+        services["transcribe"] = "error"
+    try:
+        import boto3
+        boto3.client("polly", region_name=os.environ.get("AWS_DEFAULT_REGION","us-east-1")).describe_voices(LanguageCode="en-IN")
+        services["polly"] = "ok"
+    except Exception:
+        services["polly"] = "error"
+
     return {
-        "status": "healthy",
+        "status":    "healthy",
         "timestamp": datetime.utcnow().isoformat(),
-        "service": "SKILL DNA API",
-        "version": "1.0.0",
+        "service":   "SKILL DNA API",
+        "version":   "2.0.0",
+        "aws_services": services,
     }
 
 
@@ -527,41 +565,56 @@ def run_interviewer_agent(req: InterviewRequest):
 
 @app.post("/api/pipeline/fingerprint")
 def create_fingerprint(req: FingerprintRequest):
-    """Synthesize Skill Fingerprint and generate lesson module."""
-    craft_name = req.craft_name or "Madurai Sungudi"
-    artisan_name = req.artisan_name or "Meenakshi Ammal"
+    """Synthesize Skill Fingerprint, save to S3, index in DynamoDB, generate lesson."""
+    craft_name   = req.craft_name   or "Traditional Craft"
+    artisan_name = req.artisan_name or "Master Artisan"
 
     try:
         from agents.knowledge_architect import KnowledgeArchitectAgent
         from agents.curriculum_agent import CurriculumAgent
 
-        architect = KnowledgeArchitectAgent()
-        fp_result = architect.build_fingerprint(
-            req.observation,
-            req.answers,
-            craft_name,
-            artisan_name,
-        )
+        architect   = KnowledgeArchitectAgent()
+        fp_result   = architect.build_fingerprint(req.observation, req.answers, craft_name, artisan_name)
         fingerprint = fp_result.get("fingerprint", fp_result)
 
-        curriculum = CurriculumAgent()
-        lesson = curriculum.create_lesson(fingerprint if isinstance(fingerprint, dict) else {})
+        curriculum  = CurriculumAgent()
+        lesson      = curriculum.create_lesson(fingerprint if isinstance(fingerprint, dict) else {})
+
+        # --- Save to Amazon S3 ---
+        s3_result = {"status": "skipped"}
+        try:
+            from services.s3_service import save_fingerprint_to_s3, list_fingerprints_in_s3
+            s3_result = save_fingerprint_to_s3(fingerprint, craft_name)
+        except Exception as s3_err:
+            s3_result = {"status": "error", "error": str(s3_err)}
+
+        # --- Index in DynamoDB ---
+        ddb_result = {"status": "skipped"}
+        try:
+            from services.dynamodb_service import index_fingerprint
+            ddb_result = index_fingerprint(fingerprint, s3_result.get("s3_uri", ""))
+        except Exception as ddb_err:
+            ddb_result = {"status": "error", "error": str(ddb_err)}
 
         return {
-            "success": True,
-            "is_demo": False,
+            "success":    True,
+            "is_demo":    False,
             "fingerprint": fingerprint,
-            "lesson": lesson,
+            "lesson":     lesson,
+            "s3":         s3_result,
+            "dynamodb":   ddb_result,
         }
     except Exception as exc:
-        demo_fp = get_demo_fingerprint(craft_name, artisan_name)
+        demo_fp  = get_demo_fingerprint(craft_name, artisan_name)
         demo_les = get_demo_lesson(craft_name)
         return {
-            "success": True,
-            "is_demo": True,
-            "note": f"Falling back to demo fingerprint and lesson: {exc}",
+            "success":    True,
+            "is_demo":    True,
+            "note":       f"Falling back to demo: {exc}",
             "fingerprint": demo_fp,
-            "lesson": demo_les,
+            "lesson":     demo_les,
+            "s3":         {"status": "demo"},
+            "dynamodb":   {"status": "demo"},
         }
 
 
@@ -599,28 +652,58 @@ def run_all_pipeline(req: RunAllRequest):
 
 @app.get("/api/fingerprints")
 def list_fingerprints():
-    """List all saved Skill Fingerprints."""
-    if not FINGERPRINTS_DIR.exists():
-        return {"success": True, "fingerprints": []}
+    """List all saved Skill Fingerprints — from DynamoDB index (S3 is source of truth)."""
+    # Try DynamoDB index first
+    try:
+        from services.dynamodb_service import list_all_fingerprints_index
+        items = list_all_fingerprints_index()
+        if items:
+            return {"success": True, "source": "dynamodb", "fingerprints": items}
+    except Exception:
+        pass
 
+    # Fallback: S3 listing
+    try:
+        from services.s3_service import list_fingerprints_in_s3
+        items = list_fingerprints_in_s3()
+        if items:
+            return {"success": True, "source": "s3", "fingerprints": items}
+    except Exception:
+        pass
+
+    # Last resort: local files
     results = []
-    for f in sorted(FINGERPRINTS_DIR.glob("*.json"), reverse=True):
-        try:
-            content = json.loads(f.read_text(encoding="utf-8"))
-            results.append({
-                "filename": f.name,
-                "path": str(f),
-                "craft_name": content.get("craft_name", "Unknown"),
-                "artisan_name": content.get("artisan_name", "Unknown"),
-                "created_at": content.get("created_at", ""),
-                "version": content.get("version", "1.0"),
-                "materials_count": len(content.get("materials", [])),
-                "techniques_count": len(content.get("techniques", [])),
-            })
-        except Exception:
-            continue
+    if FINGERPRINTS_DIR.exists():
+        for f in sorted(FINGERPRINTS_DIR.glob("*.json"), reverse=True):
+            try:
+                content = json.loads(f.read_text(encoding="utf-8"))
+                results.append({
+                    "filename":        f.name,
+                    "craft_name":      content.get("craft_name", "Unknown"),
+                    "artisan_name":    content.get("artisan_name", "Unknown"),
+                    "created_at":      content.get("created_at", ""),
+                    "version":         content.get("version", "1.0"),
+                    "materials_count": len(content.get("materials", [])),
+                    "techniques_count":len(content.get("techniques", [])),
+                })
+            except Exception:
+                continue
+    return {"success": True, "source": "local", "fingerprints": results}
 
-    return {"success": True, "fingerprints": results}
+
+@app.get("/api/fingerprints/s3/{craft_name}")
+def get_fingerprint_from_s3(craft_name: str):
+    """Retrieve the latest Skill Fingerprint for a craft from Amazon S3."""
+    try:
+        from services.s3_service import load_fingerprint_from_s3
+        result = load_fingerprint_from_s3(craft_name)
+        if result["status"] == "loaded":
+            return {"success": True, "source": "s3", "fingerprint": result["fingerprint"], "s3_uri": result["s3_uri"]}
+        raise HTTPException(status_code=404, detail=result.get("error", "Not found"))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/api/fingerprints/{filename}")
@@ -640,30 +723,179 @@ def get_fingerprint_file(filename: str):
 @app.post("/api/learner/session")
 def learner_session(req: LearnerSessionRequest):
     """
-    Talk to the Mentor Agent with session memory (b08_sessions pattern).
+    Talk to the Mentor Agent (b08 sessions pattern) and save progress to DynamoDB.
     The agent remembers this learner's quiz history across calls.
     """
+    # --- Save progress to DynamoDB ---
+    ddb_result = {"status": "skipped"}
+    if req.quiz_score is not None or req.completed_steps is not None:
+        try:
+            from services.dynamodb_service import save_learner_progress
+            ddb_result = save_learner_progress(
+                learner_id=req.learner_id,
+                craft_name=req.craft_name,
+                quiz_score=req.quiz_score,
+                total_questions=req.total_questions,
+                completed_steps=req.completed_steps,
+            )
+        except Exception as ddb_err:
+            ddb_result = {"status": "error", "error": str(ddb_err)}
+
+    # --- Mentor Agent with session memory ---
     try:
         from agents.orchestrator import get_learner_session_agent
-        mentor = get_learner_session_agent(req.learner_id)
+        mentor   = get_learner_session_agent(req.learner_id)
         response = mentor(req.message)
+
+        # Save mentor note to DynamoDB too
+        if ddb_result.get("status") != "skipped":
+            try:
+                from services.dynamodb_service import save_learner_progress
+                save_learner_progress(
+                    req.learner_id, req.craft_name,
+                    session_note=str(response)[:500],
+                )
+            except Exception:
+                pass
+
         return {
-            "success": True,
-            "is_demo": False,
+            "success":    True,
+            "is_demo":    False,
             "learner_id": req.learner_id,
-            "response": str(response),
+            "response":   str(response),
+            "dynamodb":   ddb_result,
         }
     except Exception as exc:
         return {
-            "success": True,
-            "is_demo": True,
+            "success":    True,
+            "is_demo":    True,
             "learner_id": req.learner_id,
-            "response": (
-                f"Great work on your practice session! Keep focusing on consistent "
-                f"knot tension — that's the heart of Sungudi mastery. "
-                f"(Mentor session: {exc})"
-            ),
+            "response":   f"Great work on your practice! Keep going — consistency is the key to mastery. ({exc})",
+            "dynamodb":   ddb_result,
         }
+
+
+@app.get("/api/learner/{learner_id}/progress")
+def get_learner_progress(learner_id: str, craft_name: str = ""):
+    """Get a learner's progress history from DynamoDB."""
+    try:
+        from services.dynamodb_service import get_learner_progress, get_all_learner_crafts
+        if craft_name:
+            data = get_learner_progress(learner_id, craft_name)
+        else:
+            data = {"crafts": get_all_learner_crafts(learner_id), "learner_id": learner_id}
+        return {"success": True, "progress": data}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Amazon Transcribe — Artisan audio → text
+# ---------------------------------------------------------------------------
+
+@app.post("/api/transcribe/upload")
+async def transcribe_audio(
+    audio: UploadFile = File(...),
+    language: str = Form("en-IN"),
+    artisan_name: str = Form("artisan"),
+):
+    """
+    Accept an artisan audio recording and transcribe it to text.
+    Supports Tamil (ta-IN, routed as en-IN with note) and Indian English (en-IN).
+    The transcript replaces manual typing in the Artisan Studio.
+    """
+    try:
+        from services.transcribe_service import transcribe_sync
+        audio_bytes = await audio.read()
+        result = transcribe_sync(
+            audio_bytes=audio_bytes,
+            filename=audio.filename or "artisan_recording.mp3",
+            language=language,
+            artisan_name=artisan_name,
+            timeout_sec=120,
+        )
+        return {"success": True, **result}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/transcribe/start")
+async def start_transcription(
+    audio: UploadFile = File(...),
+    language: str = Form("en-IN"),
+    artisan_name: str = Form("artisan"),
+):
+    """Start an async transcription job — returns job_name to poll later."""
+    try:
+        from services.transcribe_service import upload_audio_and_transcribe
+        audio_bytes = await audio.read()
+        result = upload_audio_and_transcribe(
+            audio_bytes=audio_bytes,
+            filename=audio.filename or "artisan_recording.mp3",
+            language=language,
+            artisan_name=artisan_name,
+        )
+        return {"success": True, **result}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/transcribe/status/{job_name}")
+def check_transcription_status(job_name: str):
+    """Poll an async transcription job status."""
+    try:
+        from services.transcribe_service import get_transcription_result
+        result = get_transcription_result(job_name, wait=False)
+        return {"success": True, **result}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Amazon Polly — Text → spoken lesson audio
+# ---------------------------------------------------------------------------
+
+@app.post("/api/polly/synthesize")
+def synthesize_text(request: dict):
+    """
+    Convert any text to spoken audio using Amazon Polly (Indian English).
+    Returns a presigned S3 URL valid for 1 hour.
+    """
+    text     = request.get("text", "")
+    voice_id = request.get("voice_id", "Kajal")
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    try:
+        from services.polly_service import synthesize_speech
+        result = synthesize_speech(text, voice_id=voice_id)
+        return {"success": True, **result}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/polly/lesson-step")
+def synthesize_lesson_step_audio(step: dict):
+    """
+    Generate spoken audio for a complete practice step
+    (instruction + sensory checkpoint + common mistake).
+    """
+    try:
+        from services.polly_service import synthesize_lesson_step
+        result = synthesize_lesson_step(step)
+        return {"success": True, **result}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/polly/voices")
+def list_polly_voices():
+    """List available Indian English voices in Amazon Polly."""
+    try:
+        from services.polly_service import get_available_voices
+        voices = get_available_voices()
+        return {"success": True, "voices": voices}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 

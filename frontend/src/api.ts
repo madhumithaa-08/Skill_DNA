@@ -129,3 +129,115 @@ export async function sendMentorMessage(learnerId: string, message: string): Pro
   return res.json();
 }
 
+
+// ---------------------------------------------------------------------------
+// Amazon Polly — lesson audio
+// ---------------------------------------------------------------------------
+
+export async function synthesizeSpeech(text: string, voiceId: string = 'Kajal'): Promise<{
+  success: boolean;
+  status: string;
+  audio_url?: string;
+  error?: string;
+}> {
+  const res = await fetch(`${API_BASE}/api/polly/synthesize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, voice_id: voiceId }),
+  });
+  if (!res.ok) throw new Error('Polly synthesis failed');
+  return res.json();
+}
+
+export async function synthesizeLessonStep(step: object): Promise<{
+  success: boolean;
+  audio_url?: string;
+  error?: string;
+}> {
+  const res = await fetch(`${API_BASE}/api/polly/lesson-step`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(step),
+  });
+  if (!res.ok) throw new Error('Polly step synthesis failed');
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Amazon Transcribe — artisan audio → text
+// ---------------------------------------------------------------------------
+
+export async function transcribeAudio(
+  audioFile: File,
+  language: string = 'en-IN',
+  artisanName: string = 'artisan',
+): Promise<{
+  success: boolean;
+  status: string;
+  transcript?: string;
+  job_name?: string;
+  error?: string;
+}> {
+  const form = new FormData();
+  form.append('audio', audioFile);
+  form.append('language', language);
+  form.append('artisan_name', artisanName);
+  const res = await fetch(`${API_BASE}/api/transcribe/upload`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!res.ok) throw new Error('Transcription request failed');
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// DynamoDB — learner progress
+// ---------------------------------------------------------------------------
+
+export async function saveLearnerProgress(
+  learnerId: string,
+  craftName: string,
+  quizScore: number,
+  totalQuestions: number,
+  completedSteps: number[],
+): Promise<{ success: boolean }> {
+  const res = await fetch(`${API_BASE}/api/learner/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      learner_id: learnerId,
+      craft_name: craftName,
+      message: `Quiz completed: ${quizScore}/${totalQuestions}`,
+      quiz_score: quizScore,
+      total_questions: totalQuestions,
+      completed_steps: completedSteps,
+    }),
+  });
+  if (!res.ok) throw new Error('Failed to save progress');
+  return res.json();
+}
+
+export async function getLearnerProgress(learnerId: string, craftName?: string): Promise<{
+  success: boolean;
+  progress: any;
+}> {
+  const url = craftName
+    ? `${API_BASE}/api/learner/${encodeURIComponent(learnerId)}/progress?craft_name=${encodeURIComponent(craftName)}`
+    : `${API_BASE}/api/learner/${encodeURIComponent(learnerId)}/progress`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Failed to load progress');
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Health check with AWS services status (extended version)
+// ---------------------------------------------------------------------------
+
+export async function checkHealthFull(): Promise<{
+  status: string;
+  aws_services: Record<string, string>;
+  version: string;
+}> {
+  const res = await fetch(`${API_BASE}/health`);
+  return res.json();
+}

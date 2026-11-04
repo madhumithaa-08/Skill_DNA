@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import confetti from 'canvas-confetti';
 import {
   BookOpen,
@@ -13,6 +13,8 @@ import {
   Check,
   Eye,
   Bot,
+  Volume2,
+  Loader2 as SpinnerIcon,
   User,
   Send,
   Loader2,
@@ -34,6 +36,8 @@ export const LearnerStudio: React.FC<LearnerStudioProps> = ({
   const [activeStepIndex, setActiveStepIndex] = useState(0);
   const [completedSteps, setCompletedSteps] = useState<number[]>([]);
   const [completedObjectives, setCompletedObjectives] = useState<number[]>([]);
+  const [audioLoading, setAudioLoading] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // Quiz state
   const [selectedAnswers, setSelectedAnswers] = useState<Record<number, string>>({});
@@ -94,6 +98,27 @@ export const LearnerStudio: React.FC<LearnerStudioProps> = ({
     setCompletedSteps((prev) =>
       prev.includes(idx) ? prev.filter((i) => i !== idx) : [...prev, idx]
     );
+  };
+
+  const handleListenStep = async () => {
+    if (!lesson || audioLoading) return;
+    const step = lesson.practice_steps[activeStepIndex];
+    if (!step) return;
+    setAudioLoading(true);
+    try {
+      const { synthesizeLessonStep } = await import('../api');
+      const result = await synthesizeLessonStep(step as any);
+      if (result.audio_url) {
+        if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+        const audio = new Audio(result.audio_url);
+        audioRef.current = audio;
+        audio.play();
+      }
+    } catch (e) {
+      console.error('Audio synthesis failed', e);
+    } finally {
+      setAudioLoading(false);
+    }
   };
 
   const handleSelectAnswer = (qIndex: number, option: string) => {
@@ -300,7 +325,18 @@ export const LearnerStudio: React.FC<LearnerStudioProps> = ({
                   <Check className="w-3.5 h-3.5" />
                   {completedSteps.includes(activeStepIndex) ? 'Practice Stamped' : 'Mark as Practiced'}
                 </button>
-              </div>
+                {/* Amazon Polly — Listen button */}
+                <button
+                  onClick={handleListenStep}
+                  disabled={audioLoading}
+                  title="Listen to this step (Amazon Polly)"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  {audioLoading
+                    ? <SpinnerIcon className="w-3.5 h-3.5 animate-spin" />
+                    : <Volume2 className="w-3.5 h-3.5" />}
+                  <span className="hidden sm:inline">Listen</span>
+                </button>              </div>
 
               <h3 className="text-base sm:text-xl font-bold text-white mb-4 font-serif-heading leading-relaxed">
                 {lesson.practice_steps[activeStepIndex].instruction}
