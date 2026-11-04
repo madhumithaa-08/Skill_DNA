@@ -122,10 +122,10 @@ class KnowledgeArchitectAgent:
                 f"strands-agents is required for KnowledgeArchitectAgent: {_STRANDS_IMPORT_ERROR}"
             )
         region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-        model_id = os.getenv("BEDROCK_MODEL_ID", "claude-3-5-sonnet-20241022")
+        model_id = os.getenv("BEDROCK_MODEL_ID", "amazon.nova-pro-v1:0")
 
-        bedrock_client = boto3.client("bedrock-runtime", region_name=region)
-        model = BedrockModel(model_id=model_id, boto3_client=bedrock_client)
+        os.environ.setdefault("AWS_DEFAULT_REGION", region)
+        model = BedrockModel(model_id=model_id)
 
         self.agent = Agent(
             model=model,
@@ -160,10 +160,10 @@ ARTISAN Q&A ANSWERS:
 {json.dumps(qa_answers, indent=2)}
 
 Use the build_skill_fingerprint tool to create a comprehensive fingerprint.
-For Madurai Sungudi specifically:
-- craft_origin: "Madurai, Tamil Nadu, India"
-- craft_heritage: "Geographical Indication (GI) Tag craft of Tamil Nadu"
-- cultural_significance: Describe the 2000+ year heritage, significance in Tamil weddings and festivals
+Infer craft_origin and craft_heritage from the craft name and context:
+- If the craft has a known geographic origin (e.g. Madurai Sungudi → "Madurai, Tamil Nadu, India"), use it
+- If it has a GI tag or UNESCO recognition, mention that in craft_heritage
+- For any craft worldwide, document cultural_significance accurately from the Q&A and observation
 
 Extract and structure:
 - materials: Every material mentioned with description and source

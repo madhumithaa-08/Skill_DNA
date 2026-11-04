@@ -88,13 +88,21 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env and fill in your AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
 
-# 4. Run the app
+# 4. Run the enhanced React frontend & FastAPI backend:
+# Terminal 1: Launch FastAPI backend
+python -m uvicorn api:app --reload --port 8000
+
+# Terminal 2: Launch React frontend
+cd frontend
+npm install
+npm run dev
+# The React app will open at http://localhost:5173
+
+# (Optional) Run the legacy Streamlit UI:
 streamlit run app.py
 ```
 
-The app will open in your browser at `http://localhost:8501`.
-
-> **No AWS credentials?** The app runs in demo mode automatically — all four agents gracefully fall back to rich pre-built demo data for Madurai Sungudi, so you can explore the full UI without AWS access.
+> **No AWS credentials?** Both the React frontend and Streamlit app run in demo mode automatically — all four agents gracefully fall back to rich pre-built demo data for Madurai Sungudi, so you can explore the full UI without AWS access.
 
 ---
 

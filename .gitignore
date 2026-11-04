@@ -1,7 +1,32 @@
+# Python
 __pycache__/
 *.py[cod]
 *.pyo
+*.pyc
+
+# Environment — NEVER commit credentials
 .env
-*.json
-!data/skill_fingerprints/.gitkeep
+.env.local
+.env.production
+
+# Secrets
+.agentcore_runtime_id
+
+# Node / React
+frontend/node_modules/
+frontend/dist/
+
+# macOS
 .DS_Store
+
+# Data — keep gitkeep placeholder, exclude actual saved fingerprints and sessions
+data/skill_fingerprints/*.json
+data/sessions/
+
+# Kit results (generated, not source)
+kit/results/
+
+# Python build artifacts
+*.egg-info/
+dist/
+build/

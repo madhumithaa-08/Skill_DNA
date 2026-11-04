@@ -60,10 +60,10 @@ class InterviewerAgent:
                 f"strands-agents is required for InterviewerAgent: {_STRANDS_IMPORT_ERROR}"
             )
         region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
-        model_id = os.getenv("BEDROCK_MODEL_ID", "claude-3-5-sonnet-20241022")
+        model_id = os.getenv("BEDROCK_MODEL_ID", "amazon.nova-pro-v1:0")
 
-        bedrock_client = boto3.client("bedrock-runtime", region_name=region)
-        model = BedrockModel(model_id=model_id, boto3_client=bedrock_client)
+        os.environ.setdefault("AWS_DEFAULT_REGION", region)
+        model = BedrockModel(model_id=model_id)
 
         self.agent = Agent(
             model=model,
