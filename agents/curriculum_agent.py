@@ -83,6 +83,7 @@ class CurriculumAgent:
             model=model,
             system_prompt=CURRICULUM_SYSTEM_PROMPT,
             tools=[generate_lesson_module],
+            callback_handler=None,
         )
 
     def create_lesson(self, fingerprint: dict) -> dict:

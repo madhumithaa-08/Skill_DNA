@@ -131,6 +131,7 @@ class KnowledgeArchitectAgent:
             model=model,
             system_prompt=KNOWLEDGE_ARCHITECT_SYSTEM_PROMPT,
             tools=[build_skill_fingerprint],
+            callback_handler=None,
         )
 
     def build_fingerprint(

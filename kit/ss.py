@@ -2,20 +2,27 @@
 SKILL DNA automation CLI — mirrors the strands-ship `ss` commands.
 
 Commands:
-    python kit/ss.py bedrock          — verify AWS + Bedrock are working
-    python kit/ss.py blocks           — list available Strands blocks
-    python kit/ss.py block <name>     — run one block live (e.g. block sessions)
-    python kit/ss.py pipeline         — run the live Observer → Curriculum pipeline on Sungudi sample
-    python kit/ss.py measure          — run SKILL DNA vs baseline on cases.jsonl
-    python kit/ss.py check            — pre-submission checklist
+    python kit/ss.py bench                  — score all signed cases -> results.json + MEASURE.md
+    python kit/ss.py video --target local   — record the live demo -> demo.mp4 + video_run.json
+    python kit/ss.py article                — write the honest-numbers article + FACTS.md
+    python kit/ss.py check                  — verify all submission artifacts present
+    python kit/ss.py status                 — pre-submission env checklist
+    python kit/ss.py measure [--limit N]    — alias for bench
+    python kit/ss.py bedrock                — verify AWS + Bedrock are working
+    python kit/ss.py blocks                 — list available Strands blocks
+    python kit/ss.py block <name>           — run one block live (e.g. block sessions)
+    python kit/ss.py pipeline               — run the live Observer → Curriculum pipeline
 
 Usage:
     python kit/ss.py <command> [args]
+    ./kit <command> [args]          # via the executable wrapper at the project root
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import os
 import subprocess
 import sys
 import time
@@ -28,12 +35,72 @@ SAMPLE_NOTES = ROOT / "data" / "sample_sungudi_notes.txt"
 sys.path.insert(0, str(ROOT))
 
 
+def _load_env() -> None:
+    from dotenv import load_dotenv
+    load_dotenv()
+
+
+def _load_module(name: str, path: Path):
+    """Import a sibling kit module by absolute path (runs in this process)."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# ---------------------------------------------------------------------------
+# bench / measure — score all signed cases, write results.json + MEASURE.md
+# ---------------------------------------------------------------------------
+def cmd_bench(args):
+    _load_env()
+    measure = _load_module("measure", ROOT / "kit" / "measure.py")
+    argv = ["--limit", str(args.limit)] if getattr(args, "limit", None) else []
+    return measure.main(argv)
+
+
+# alias kept for backward compatibility
+cmd_measure = cmd_bench
+
+
+# ---------------------------------------------------------------------------
+# video — record the live demo (Playwright drives the real website)
+# ---------------------------------------------------------------------------
+def cmd_video(args):
+    _load_env()
+    if args.target != "local":
+        print("ERROR: AgentCore deployment is not supported by this kit; use --target local")
+        return 1
+    url = getattr(args, "url", "http://localhost:8000")
+    make_video = _load_module("make_video", ROOT / "kit" / "make_video.py")
+    result = make_video.record(base_url=url, dry_run=args.dry_run)
+    if args.dry_run:
+        return 0
+    return 0 if result.get("under_3_min") else 1
+
+
+# ---------------------------------------------------------------------------
+# article — generate the honest-numbers article + FACTS.md
+# ---------------------------------------------------------------------------
+def cmd_article(_args):
+    make_article = _load_module("make_article", ROOT / "kit" / "make_article.py")
+    return make_article.main()
+
+
+# ---------------------------------------------------------------------------
+# check — submission artifact completeness
+# ---------------------------------------------------------------------------
+def cmd_check(_args):
+    check_submission = _load_module("check_submission", ROOT / "kit" / "check_submission.py")
+    return check_submission.main()
+
+
 # ---------------------------------------------------------------------------
 # bedrock
 # ---------------------------------------------------------------------------
 def cmd_bedrock(_args):
+    _load_env()
     print("\n🔍 Checking AWS + Bedrock credentials...\n")
-    import boto3, os
+    import boto3
     from dotenv import load_dotenv
     load_dotenv()
 
@@ -97,7 +164,6 @@ def cmd_block(args):
         return 1
 
     name = args.name.replace("-", "_")
-    # Find matching block file
     matches = list(BLOCKS_DIR.glob(f"*{name}*.py"))
     matches = [m for m in matches if not m.name.startswith("_")]
     if not matches:
@@ -106,7 +172,7 @@ def cmd_block(args):
     block_file = matches[0]
     print(f"\n▶ Running block: {block_file.name}\n")
 
-    env = {**__import__("os").environ, "PYTHONPATH": str(BLOCKS_DIR)}
+    env = {**os.environ, "PYTHONPATH": str(BLOCKS_DIR)}
     result = subprocess.run(
         [sys.executable, str(block_file)],
         cwd=str(BLOCKS_DIR),
@@ -119,25 +185,21 @@ def cmd_block(args):
 # pipeline — live end-to-end run on Sungudi sample
 # ---------------------------------------------------------------------------
 def cmd_pipeline(_args):
-    from dotenv import load_dotenv
-    load_dotenv()
-
+    _load_env()
     print("\n🧬 SKILL DNA — Live Pipeline Run\n")
     print("  Using: Madurai Sungudi sample notes (pilot demo)\n")
 
     notes = SAMPLE_NOTES.read_text() if SAMPLE_NOTES.exists() else (
         "I wash silk in warm water, tie knots with cotton thread at chalk marks, dip in crimson dye for 20 minutes, then untie."
     )
-    craft_name = "Madurai Sungudi"  # demo craft — the platform works with any craft
+    craft_name = "Madurai Sungudi"
 
-    # Stage 1
     print("[Stage 1] Observer Agent →", end="", flush=True)
     t0 = time.time()
     from agents.observer_agent import ObserverAgent
     obs = ObserverAgent().analyze(notes[:800])
     print(f" ✅ {int((time.time()-t0)*1000)}ms | {len(obs.get('visible_steps',[]))} steps | {len(obs.get('knowledge_gaps',[]))} gaps")
 
-    # Stage 2
     print("[Stage 2] Interviewer Agent →", end="", flush=True)
     t0 = time.time()
     from agents.interviewer_agent import InterviewerAgent
@@ -146,7 +208,6 @@ def cmd_pipeline(_args):
     for i, q in enumerate(questions[:3], 1):
         print(f"   Q{i}: {q[:90]}")
 
-    # Stage 3
     print("[Stage 3] Knowledge Architect →", end="", flush=True)
     t0 = time.time()
     sample_qa = {questions[0]: "You feel the resistance in your fingertips when the knot is secure."} if questions else {}
@@ -156,7 +217,6 @@ def cmd_pipeline(_args):
     techniques = len(fp.get("techniques", [])) if isinstance(fp, dict) else 0
     print(f" ✅ {int((time.time()-t0)*1000)}ms | {techniques} techniques in fingerprint")
 
-    # Stage 4
     print("[Stage 4] Curriculum Agent →", end="", flush=True)
     t0 = time.time()
     from agents.curriculum_agent import CurriculumAgent
@@ -170,30 +230,13 @@ def cmd_pipeline(_args):
 
 
 # ---------------------------------------------------------------------------
-# measure
+# status — pre-submission env checklist (the former `check`)
 # ---------------------------------------------------------------------------
-def cmd_measure(args):
-    from dotenv import load_dotenv
-    load_dotenv()
-    import importlib.util, sys as _sys
-    spec = importlib.util.spec_from_file_location("measure", ROOT / "kit" / "measure.py")
-    mod  = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    limit = ["--limit", str(args.limit)] if getattr(args, "limit", None) else []
-    return mod.main(limit)
-
-
-# ---------------------------------------------------------------------------
-# check — pre-submission checklist
-# ---------------------------------------------------------------------------
-def cmd_check(_args):
-    from dotenv import load_dotenv
-    load_dotenv()
-
-    print("\n📋 SKILL DNA — Submission Checklist\n")
+def cmd_status(_args):
+    _load_env()
+    print("\n📋 SKILL DNA — Environment Status\n")
     checks = []
 
-    # AWS
     try:
         import boto3
         boto3.client("sts").get_caller_identity()
@@ -201,59 +244,36 @@ def cmd_check(_args):
     except Exception as e:
         checks.append(("❌", f"AWS credentials: {e}"))
 
-    # .env
     env_file = ROOT / ".env"
     checks.append(("✅" if env_file.exists() else "❌", ".env file exists"))
 
-    # Frontend build
     dist = ROOT / "frontend" / "dist" / "index.html"
     checks.append(("✅" if dist.exists() else "⚠️", "React frontend built (frontend/dist/)"))
 
-    # cases.jsonl
     cases = ROOT / "kit" / "cases" / "cases.jsonl"
     n = len(cases.read_text().splitlines()) if cases.exists() else 0
     checks.append(("✅" if n >= 5 else "⚠️", f"cases.jsonl: {n} signed cases"))
 
-    # MEASURE.md
     measure = ROOT / "kit" / "results" / "MEASURE.md"
-    checks.append(("✅" if measure.exists() else "⚠️", "MEASURE.md generated (run: python kit/ss.py measure)"))
+    checks.append(("✅" if measure.exists() else "⚠️", "MEASURE.md generated (run: python kit/ss.py bench)"))
 
-    # agents importable
     try:
         from agents.orchestrator import run_skill_capture_pipeline
         checks.append(("✅", "All Strands agents import cleanly"))
     except Exception as e:
         checks.append(("❌", f"Agent import error: {e}"))
 
-    # strands-ship blocks
     blocks = list(BLOCKS_DIR.glob("b*.py")) if BLOCKS_DIR.exists() else []
     checks.append(("✅" if len(blocks) >= 10 else "⚠️", f"strands-ship blocks: {len(blocks)} available"))
 
-    # README
     readme = ROOT / "README.md"
     checks.append(("✅" if readme.exists() else "❌", "README.md exists"))
-
-    # demo script
-    demo = ROOT / "demo" / "sungudi_demo_script.md"
-    checks.append(("✅" if demo.exists() else "⚠️", "Demo script exists"))
-
-    required_items = [
-        ("❓", "Builder Center article (write after testing)"),
-        ("❓", "GitHub public repo (push to GitHub)"),
-        ("❓", "Demo video under 3 minutes (record from live run)"),
-        ("❓", "Workshop completion on Builder Center"),
-    ]
 
     for icon, msg in checks:
         print(f"  {icon}  {msg}")
 
-    print()
-    for icon, msg in required_items:
-        print(f"  {icon}  {msg}")
-
-    print()
     passed = sum(1 for i, _ in checks if i == "✅")
-    print(f"  {passed}/{len(checks)} automated checks passed\n")
+    print(f"\n  {passed}/{len(checks)} environment checks passed\n")
     return 0
 
 
@@ -261,12 +281,16 @@ def cmd_check(_args):
 # Entry point
 # ---------------------------------------------------------------------------
 COMMANDS = {
+    "bench": cmd_bench,
+    "measure": cmd_measure,
+    "video": cmd_video,
+    "article": cmd_article,
+    "check": cmd_check,
+    "status": cmd_status,
     "bedrock": cmd_bedrock,
     "blocks": cmd_blocks,
     "block": cmd_block,
     "pipeline": cmd_pipeline,
-    "measure": cmd_measure,
-    "check": cmd_check,
 }
 
 
@@ -277,14 +301,26 @@ def main():
     )
     sub = ap.add_subparsers(dest="cmd")
 
+    mp = sub.add_parser("measure", help="Alias for bench")
+    mp.add_argument("--limit", type=int, help="Limit number of cases")
+
+    bp = sub.add_parser("bench", help="Score all signed cases -> results.json + MEASURE.md")
+    bp.add_argument("--limit", type=int, help="Limit number of cases")
+
+    vp = sub.add_parser("video", help="Record the live demo video")
+    vp.add_argument("--target", default="local", help="local (default); agentcore not supported by this kit")
+    vp.add_argument("--url", default="http://localhost:8000", help="URL of the running app (default: http://localhost:8000)")
+    vp.add_argument("--dry-run", action="store_true", help="Show scenes without recording")
+
+    sub.add_parser("article", help="Generate the honest-numbers article + FACTS.md")
+    sub.add_parser("check", help="Verify all submission artifacts are present")
+    sub.add_parser("status", help="Pre-submission environment checklist")
+
     sub.add_parser("bedrock", help="Verify AWS + Bedrock credentials")
     sub.add_parser("blocks", help="List available Strands blocks")
-    bp = sub.add_parser("block", help="Run a Strands block live")
-    bp.add_argument("name", nargs="?", help="Block name (e.g. sessions, graph, hooks)")
+    blp = sub.add_parser("block", help="Run a Strands block live")
+    blp.add_argument("name", nargs="?", help="Block name (e.g. sessions, graph, hooks)")
     sub.add_parser("pipeline", help="Run live end-to-end SKILL DNA pipeline")
-    mp = sub.add_parser("measure", help="Run SKILL DNA vs baseline measurement")
-    mp.add_argument("--limit", type=int, help="Limit number of cases")
-    sub.add_parser("check", help="Pre-submission checklist")
 
     args = ap.parse_args()
     if not args.cmd:

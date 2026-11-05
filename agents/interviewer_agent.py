@@ -69,6 +69,7 @@ class InterviewerAgent:
             model=model,
             system_prompt=INTERVIEWER_SYSTEM_PROMPT,
             tools=[generate_artisan_questions],
+            callback_handler=None,
         )
 
     def generate_questions(self, knowledge_gaps: list, craft_name: str) -> list:

@@ -69,6 +69,7 @@ class ObserverAgent:
             model=model,
             system_prompt=OBSERVER_SYSTEM_PROMPT,
             tools=[extract_craft_steps],
+            callback_handler=None,
         )
 
     def analyze(self, artisan_description: str) -> dict:
